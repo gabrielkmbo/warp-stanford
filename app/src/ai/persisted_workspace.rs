@@ -167,6 +167,8 @@ pub struct PersistedWorkspace {
     /// Global installation status per LSP server type.
     #[cfg(feature = "local_fs")]
     lsp_installation_status: HashMap<LSPServerType, LSPInstallationStatus>,
+    #[cfg(feature = "local_fs")]
+    lsp_removal_generations: HashMap<PathBuf, u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +214,8 @@ impl PersistedWorkspace {
             model_event_sender: None,
             #[cfg(feature = "local_fs")]
             lsp_installation_status: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            lsp_removal_generations: HashMap::new(),
         }
     }
 
@@ -338,6 +342,8 @@ impl PersistedWorkspace {
             model_event_sender,
             #[cfg(feature = "local_fs")]
             lsp_installation_status: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            lsp_removal_generations: HashMap::new(),
         };
 
         // Kick off LSP suggestion scanning for all existing workspaces so that
@@ -358,13 +364,65 @@ impl PersistedWorkspace {
     }
 
     /// Given a repo path, enables the specified LSP server. If the workspace doesn't exist, it will be created.
-    pub fn enable_lsp_server_for_path(&mut self, path: &Path, server_type: LSPServerType) {
+    pub fn enable_lsp_server_for_path(
+        &mut self,
+        path: &Path,
+        server_type: LSPServerType,
+        ctx: &mut ModelContext<Self>,
+    ) {
         self.set_lsp_server_for_path(path, server_type, EnablementState::Yes);
+        ctx.notify();
     }
 
     /// Given a repo path, disables the specified LSP server.
-    pub fn disable_lsp_server_for_path(&mut self, path: &Path, server_type: LSPServerType) {
+    pub fn disable_lsp_server_for_path(
+        &mut self,
+        path: &Path,
+        server_type: LSPServerType,
+        ctx: &mut ModelContext<Self>,
+    ) {
         self.set_lsp_server_for_path(path, server_type, EnablementState::No);
+        ctx.notify();
+    }
+
+    /// Removes a workspace's language server registrations without deleting its metadata.
+    pub fn remove_lsp_servers_for_path(&mut self, path: &Path, ctx: &mut ModelContext<Self>) {
+        #[cfg(feature = "local_fs")]
+        {
+            *self
+                .lsp_removal_generations
+                .entry(path.to_path_buf())
+                .or_default() += 1;
+        }
+        if let Some(workspace) = self.workspaces.get_mut(path) {
+            workspace.language_servers.clear();
+        }
+        self.save_to_db([ModelEvent::DeleteWorkspaceLanguageServers {
+            workspace_path: path.to_path_buf(),
+        }]);
+        ctx.notify();
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn enable_lsp_after_install(
+        &mut self,
+        path: &Path,
+        server_type: LSPServerType,
+        generation: u64,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        // An installation started before removal must not recreate the folder when it completes.
+        if self
+            .lsp_removal_generations
+            .get(path)
+            .copied()
+            .unwrap_or_default()
+            != generation
+        {
+            return false;
+        }
+        self.enable_lsp_server_for_path(path, server_type, ctx);
+        true
     }
 
     /// Returns the enabled LSP server type (if any) for this file path.
@@ -938,6 +996,7 @@ impl PersistedWorkspace {
         repo_root: PathBuf,
         server_type: LSPServerType,
         path_env_var: Option<String>,
+        generation: u64,
         ctx: &mut ModelContext<Self>,
     ) {
         // Early return if already installing to prevent duplicate installations from repeated clicks
@@ -968,12 +1027,19 @@ impl PersistedWorkspace {
             },
             move |me, result, ctx| match result {
                 Ok(()) => {
-                    // Enable the LSP server
-                    me.enable_lsp_server_for_path(&repo_root_clone, server_type);
-
                     // Update installation status cache
                     me.lsp_installation_status
                         .insert(server_type, LSPInstallationStatus::Installed);
+
+                    if !me.enable_lsp_after_install(&repo_root_clone, server_type, generation, ctx)
+                    {
+                        ctx.emit(PersistedWorkspaceEvent::InstallStatusUpdate {
+                            server_type,
+                            status: LSPInstallationStatus::Installed,
+                        });
+                        ctx.emit(PersistedWorkspaceEvent::InstallationSucceeded);
+                        return;
+                    }
 
                     // Show success toast
                     if let Some(window_id) = WindowManager::as_ref(ctx).active_window() {
@@ -1161,6 +1227,14 @@ impl PersistedWorkspace {
     /// This is the main entry point for LSP operations that need the full PATH.
     #[cfg(feature = "local_fs")]
     pub fn execute_lsp_task(&mut self, task: LspTask, ctx: &mut ModelContext<Self>) {
+        let generation = match &task {
+            LspTask::Install { repo_root, .. } => self
+                .lsp_removal_generations
+                .get(repo_root)
+                .copied()
+                .unwrap_or_default(),
+            LspTask::Spawn { .. } => 0,
+        };
         // For Spawn tasks, check synchronously whether there are any enabled LSP
         // servers for this workspace before kicking off the expensive interactive
         // shell PATH capture.
@@ -1185,7 +1259,22 @@ impl PersistedWorkspace {
                 repo_root,
                 server_type,
             } => {
-                me.handle_install_lsp(file_path, repo_root, server_type, path_env_var, ctx);
+                if me
+                    .lsp_removal_generations
+                    .get(&repo_root)
+                    .copied()
+                    .unwrap_or_default()
+                    == generation
+                {
+                    me.handle_install_lsp(
+                        file_path,
+                        repo_root,
+                        server_type,
+                        path_env_var,
+                        generation,
+                        ctx,
+                    );
+                }
             }
             LspTask::Spawn { file_path } => {
                 me.handle_spawn_lsp(&file_path, path_env_var, ctx);
@@ -1287,3 +1376,7 @@ pub fn all_working_directories(app: &AppContext) -> HashSet<PathBuf> {
     }
     working_directories
 }
+
+#[cfg(test)]
+#[path = "persisted_workspace_tests.rs"]
+mod tests;
