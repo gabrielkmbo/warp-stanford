@@ -1773,10 +1773,7 @@ fn parse_code_span<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum InlineToken<'a> {
     /// A run of `count` delimiter characters of `kind`.
-    Delimiter {
-        kind: DelimiterKind,
-        count: usize,
-    },
+    Delimiter { kind: DelimiterKind, count: usize },
     /// A run of non-delimiter text.
     Text(&'a str),
     /// A backslash-escaped character.
@@ -1795,6 +1792,7 @@ enum InlineToken<'a> {
     UnderlineEnd,
     /// An HTML comment, which is discarded rather than rendered.
     Comment,
+    /// An HTML break tag, emitted as a newline.
     HtmlBreak,
 }
 

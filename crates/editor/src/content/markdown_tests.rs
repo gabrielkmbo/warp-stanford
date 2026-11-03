@@ -8,7 +8,10 @@ use warpui_core::{App, ReadModel};
 
 use super::MarkdownStyle;
 use crate::content::buffer::tests::TestEmbeddedItem;
-use crate::content::buffer::{Buffer, BufferEditAction, EditOrigin, StyledBlockBoundaryBehavior};
+use crate::content::buffer::{
+    AutoScrollBehavior, Buffer, BufferEditAction, BufferSelectAction, EditOrigin,
+    StyledBlockBoundaryBehavior,
+};
 use crate::content::text::{IndentBehavior, TABLE_BLOCK_MARKDOWN_LANG};
 
 #[test]
@@ -394,6 +397,174 @@ fn html_break_table_survives_buffer_and_export_round_trips() {
         assert_eq!(
             restored.read(&app, |buffer, _| buffer.markdown_unescaped()),
             "| Feature | Notes |\n| --- | --- |\n| Export | **CSV\\.<br>JSON\\.** |\n| Empty | <br> |\n"
+        );
+    });
+}
+
+#[test]
+fn html_break_heading_buffer_round_trip() {
+    App::test((), |mut app| async move {
+        let (buffer, _) = Buffer::mock_from_markdown(
+            "# **a<br>b<br>c**\nafter",
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        let exported = buffer.read(&app, |buffer, _| buffer.markdown_unescaped());
+        assert_eq!(exported, "# **a**\n**b**\n**c**\nafter");
+        let (restored, _) = Buffer::mock_from_markdown(
+            &exported,
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        assert_eq!(
+            restored.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            exported
+        );
+    });
+}
+
+#[test]
+fn html_break_unordered_list_buffer_round_trip() {
+    App::test((), |mut app| async move {
+        let (buffer, _) = Buffer::mock_from_markdown(
+            "- **a<br>b**\n- after",
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        let exported = buffer.read(&app, |buffer, _| buffer.markdown_unescaped());
+        assert_eq!(exported, "* **a**\n* **b**\n* after\n");
+        let (restored, _) = Buffer::mock_from_markdown(
+            &exported,
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        assert_eq!(
+            restored.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            exported
+        );
+    });
+}
+
+#[test]
+fn html_break_ordered_list_buffer_round_trip() {
+    App::test((), |mut app| async move {
+        let (buffer, _) = Buffer::mock_from_markdown(
+            "1. a<br>b\n2. after",
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        let exported = buffer.read(&app, |buffer, _| buffer.markdown_unescaped());
+        assert_eq!(exported, "1. a\n2. b\n3. after\n");
+        let (restored, _) = Buffer::mock_from_markdown(
+            &exported,
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        assert_eq!(
+            restored.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            exported
+        );
+    });
+}
+
+#[test]
+fn html_break_task_list_buffer_round_trip() {
+    App::test((), |mut app| async move {
+        let (buffer, _) = Buffer::mock_from_markdown(
+            "- [x] a<br>b\n- [x] after",
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        let exported = buffer.read(&app, |buffer, _| buffer.markdown_unescaped());
+        assert_eq!(exported, "- [x] a\n- [ ] b\n- [x] after\n");
+        let (restored, _) = Buffer::mock_from_markdown(
+            &exported,
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        assert_eq!(
+            restored.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            exported
+        );
+    });
+}
+
+#[test]
+fn html_break_after_horizontal_rule_preserves_inline_styles() {
+    App::test((), |mut app| async move {
+        let (buffer, _) = Buffer::mock_from_markdown(
+            "---\n# a<br>**b**<br>[c](https://example.com)\nafter",
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        assert_eq!(
+            buffer.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            "***\n# a\n**b**\n[c](https://example.com)\nafter"
+        );
+    });
+}
+
+#[test]
+fn html_break_paste_preserves_heading_suffix() {
+    App::test((), |mut app| async move {
+        let (buffer, selection) = Buffer::mock_from_markdown(
+            "# az",
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        buffer.update(&mut app, |buffer, ctx| {
+            buffer.update_selection(
+                selection.clone(),
+                BufferSelectAction::AddCursorAt {
+                    offset: CharOffset::from(2),
+                    clear_selections: true,
+                },
+                AutoScrollBehavior::None,
+                ctx,
+            );
+            buffer.update_content(
+                BufferEditAction::InsertFormatted(parse_markdown("x<br>y").unwrap()),
+                EditOrigin::UserInitiated,
+                selection,
+                ctx,
+            );
+        });
+        assert_eq!(
+            buffer.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            "# ax\ny\n# z\n"
+        );
+    });
+}
+
+#[test]
+fn html_break_heading_delta_keeps_the_prefix() {
+    App::test((), |mut app| async move {
+        let (buffer, selection) = Buffer::mock_from_markdown(
+            "# a<br>b\nold",
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        let delta = compute_formatted_text_delta(
+            parse_markdown("# a<br>b\nold").unwrap(),
+            parse_markdown("# a<br>b\nnew").unwrap(),
+        );
+        buffer.update(&mut app, |buffer, ctx| {
+            buffer.apply_formatted_text_delta(&delta, selection, ctx);
+        });
+        assert_eq!(
+            buffer.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            "# a\nb\nnew"
         );
     });
 }

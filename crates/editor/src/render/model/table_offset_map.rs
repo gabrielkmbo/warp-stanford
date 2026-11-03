@@ -433,7 +433,6 @@ impl TableCellOffsetMap {
 }
 
 fn encoded_table_character_len(source: &[char], rendered: char) -> Option<usize> {
-    // Table serialization normalizes breaks and escapes literal '<' characters.
     match rendered {
         '\n' if source.starts_with(&['<', 'b', 'r', '>']) => Some(4),
         '<' if source.starts_with(&['&', 'l', 't', ';']) => Some(4),
