@@ -366,6 +366,118 @@ fn test_table_markdown_round_trip() {
 }
 
 #[test]
+fn html_break_table_survives_buffer_and_export_round_trips() {
+    App::test((), |mut app| async move {
+        let _flag = warp_core::features::FeatureFlag::MarkdownTables.override_enabled(true);
+        let markdown = "| Feature | Notes |\n| --- | --- |\n| Export | **CSV.<br>JSON.** |\n| Empty | <br> |\n";
+        let (buffer, _) = Buffer::mock_from_markdown(
+            markdown,
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        let internal = buffer.read(&app, |buffer, _| buffer.markdown());
+        assert_eq!(
+            internal,
+            "```warp-markdown-table\nFeature\tNotes\nExport\t**CSV.<br>JSON.**\nEmpty\t<br>\n```\n"
+        );
+        assert_eq!(
+            buffer.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            "| Feature | Notes |\n| --- | --- |\n| Export | **CSV\\.<br>JSON\\.** |\n| Empty | <br> |\n"
+        );
+        let (restored, _) = Buffer::mock_from_markdown(
+            &internal,
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        assert_eq!(
+            restored.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            "| Feature | Notes |\n| --- | --- |\n| Export | **CSV\\.<br>JSON\\.** |\n| Empty | <br> |\n"
+        );
+    });
+}
+
+#[test]
+fn html_break_paragraph_does_not_add_an_extra_blank_line() {
+    App::test((), |mut app| async move {
+        let (buffer, _) = Buffer::mock_from_markdown(
+            "first<br>\nsecond<br><br>\nthird",
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        assert_eq!(
+            buffer.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            "first\nsecond\n\nthird"
+        );
+    });
+}
+
+#[test]
+fn html_break_delta_keeps_the_prefix_when_replacing_the_suffix() {
+    App::test((), |mut app| async move {
+        let (buffer, selection) = Buffer::mock_from_markdown(
+            "first<br>second\nold",
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        let delta = compute_formatted_text_delta(
+            parse_markdown("first<br>second\nold").unwrap(),
+            parse_markdown("first<br>second\nnew").unwrap(),
+        );
+        buffer.update(&mut app, |buffer, ctx| {
+            buffer.apply_formatted_text_delta(&delta, selection, ctx);
+        });
+        assert_eq!(
+            buffer.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            "first\nsecond\nnew"
+        );
+    });
+}
+
+#[test]
+fn html_break_literal_tags_survive_table_export() {
+    App::test((), |mut app| async move {
+        let _flag = warp_core::features::FeatureFlag::MarkdownTables.override_enabled(true);
+        let markdown = "| A | B |\n| --- | --- |\n| &lt;br> | `<br>` |\n";
+        let (buffer, _) = Buffer::mock_from_markdown(
+            markdown,
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        assert_eq!(
+            buffer.read(&app, |buffer, _| buffer.markdown_unescaped()),
+            markdown
+        );
+    });
+}
+
+#[test]
+fn html_break_survives_table_html_copy() {
+    App::test((), |mut app| async move {
+        let _flag = warp_core::features::FeatureFlag::MarkdownTables.override_enabled(true);
+        let (buffer, _) = Buffer::mock_from_markdown(
+            "| A |\n| --- |\n| one<br>two |\n",
+            None,
+            Box::new(|_, _| IndentBehavior::Ignore),
+            &mut app,
+        );
+        let html = buffer
+            .read(&app, |buffer, ctx| {
+                buffer.ranges_as_html(Vec1::new(CharOffset::from(1)..buffer.max_charoffset()), ctx)
+            })
+            .unwrap();
+        assert!(
+            html.contains("<td align=\"left\">one<br>two</td>"),
+            "{html}"
+        );
+    });
+}
+
+#[test]
 fn test_table_markdown_export_escapes_pipe_characters() {
     App::test((), |mut app| async move {
         let markdown = format!(
