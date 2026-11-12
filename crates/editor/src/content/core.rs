@@ -1644,8 +1644,9 @@ fn update_content_with_text_fragments(
         }
 
         transition_styles_with_metadata(&active_text_style, &text_style, content_tree);
-        for (index, line) in content.split('\n').enumerate() {
-            if index > 0 {
+        for line in content.split_inclusive('\n') {
+            if let Some(line) = line.strip_suffix('\n') {
+                content_tree.append_str(line.strip_suffix('\r').unwrap_or(line));
                 let BlockType::Text(block_style) = previous_block_type else {
                     unreachable!("text fragments require a text block");
                 };
@@ -1658,8 +1659,9 @@ fn update_content_with_text_fragments(
                         *previous_block_type = BlockType::Text(marker_type);
                     }
                 }
+            } else {
+                content_tree.append_str(line);
             }
-            content_tree.append_str(line);
         }
     }
 }
